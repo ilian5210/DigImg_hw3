@@ -45,63 +45,94 @@ def double_threshold(image, low_threshold, high_threshold):
     return res, weak, strong
 
 def edge_tracking(image, weak, strong=255):
-    for i in range(1, image.shape[0] - 1):  # 邊緣不處理
-        for j in range(1, image.shape[1] - 1):  
-            if image[i, j] == weak:
-                if ((image[i + 1, j - 1] == strong) or (image[i + 1, j] == strong) or (image[i + 1, j + 1] == strong)  # 8個方向有無強邊緣
-                        or (image[i, j - 1] == strong) or (image[i, j + 1] == strong)
-                        or (image[i - 1, j - 1] == strong) or (image[i - 1, j] == strong) or (image[i - 1, j + 1] == strong)):
-                    image[i, j] = strong  # 設為強邊緣
-                else:
-                    image[i, j] = 0  # 非邊緣
+    # 獲取影像的形狀
+    rows, cols = image.shape
+    
+    # 創建一個堆疊來存儲需要處理的像素
+    stack = []
+    
+    # 將所有強邊緣像素推入堆疊
+    for i in range(1, rows - 1):
+        for j in range(1, cols - 1):
+            if image[i, j] == strong:
+                stack.append((i, j))
+    
+    # 處理堆疊中的像素
+    while stack:
+        i, j = stack.pop()
+        
+        # 檢查 8 個方向
+        for di in [-1, 0, 1]:
+            for dj in [-1, 0, 1]:
+                ni, nj = i + di, j + dj
+                if image[ni, nj] == weak:
+                    image[ni, nj] = strong
+                    stack.append((ni, nj))
+    
+    # 將所有剩餘的弱邊緣設為非邊緣
+    image[image == weak] = 0
+    
     return image
 
 def hough_transform_line(edge_image, rho_res=1, theta_res=np.pi/180, threshold=100):
     height, width = edge_image.shape
-    diag_len = int(np.sqrt(height**2 + width**2))  # 最大可能的 rho 值
-    rhos = np.arange(-diag_len, diag_len, rho_res)
-    thetas = np.arange(0, np.pi, theta_res)
-    accumulator = np.zeros((len(rhos), len(thetas)), dtype=np.int32)
-    y_idxs, x_idxs = np.nonzero(edge_image)  # 获取边缘点的坐标
-    for i in range(len(x_idxs)):
+    diag_len = int(np.sqrt(height**2 + width**2))  # 對角線長度
+    rhos = np.arange(-diag_len, diag_len, rho_res) # rho 的範圍 (-diag_len, diag_len)
+    thetas = np.arange(0, np.pi, theta_res)  # theta 的範圍 (0, π)
+    accumulator = np.zeros((len(rhos), len(thetas)), dtype=np.int32)  #[len(rhos), len(thetas)]的矩陣
+    y_idxs, x_idxs = np.nonzero(edge_image)  # 強邊緣點的座標
+    for i in range(len(x_idxs)):  # 強邊緣點
         x = x_idxs[i]
         y = y_idxs[i]
-        for t_idx, theta in enumerate(thetas):
-            rho = int(x * np.cos(theta) + y * np.sin(theta)) + diag_len
-            accumulator[rho, t_idx] += 1
+        for t_idx, theta in enumerate(thetas):  # 所有 theta enumerate() 函數用於將一個可遍歷的數據對象(如列表、元組或字符串)組合為一個索引序列，同時列出數據和數據下標，一般用在 for 循環當中。
+            rho = int(x * np.cos(theta) + y * np.sin(theta)) + diag_len  # rho = x cos θ + y sin θ  
+            accumulator[rho, t_idx] += 1 #投票
     lines = []
-    for r_idx in range(accumulator.shape[0]):
-        for t_idx in range(accumulator.shape[1]):
-            if accumulator[r_idx, t_idx] >= threshold:
-                rho = rhos[r_idx]
-                theta = thetas[t_idx]
-                lines.append((rho, theta))
+    threshold = np.max(accumulator) * 0.4  # 閾值
+    for r_idx in range(accumulator.shape[0]):  # 所有 rho
+        for t_idx in range(accumulator.shape[1]):  # 所有 theta
+            if accumulator[r_idx, t_idx] >= threshold: # 投票數大於閾值
+                rho = rhos[r_idx] 
+                theta = thetas[t_idx] 
+                lines.append((rho, theta)) # 線段
     return lines
 
-# 讀取影像
-image = cv2.imread('imgs/img1.jpg', 0)
-max_value = np.max(image)
+def draw_lines(image, lines): 
+    height, width = image.shape
+    length = int(np.sqrt(height**2 + width**2))  # 對角線長度
+    for rho, theta in lines:
+        a = np.cos(theta)
+        b = np.sin(theta)
+        x0 = a * rho
+        y0 = b * rho
+        x1 = int(x0 + length * (-b))
+        y1 = int(y0 + length * a)
+        x2 = int(x0 - length * (-b))
+        y2 = int(y0 - length * a)
+        cv2.line(image, (x1, y1), (x2, y2), (255, 255, 255), 1)
 
-# 高斯模糊
-blurred_image = gaussian_blur(image)
+def img_handeling(image, low_threshold, high_threshold, img_name):
+    blurred_image = gaussian_blur(image)
+    magnitude, angle = sobel_gradients(blurred_image)
+    suppressed_image = non_max_suppression(magnitude, angle)
+    thresholded_image, weak, strong = double_threshold(suppressed_image, low_threshold, high_threshold)
+    edges = edge_tracking(thresholded_image, weak, strong)
 
-# 計算梯度幅值 M(x, y) 和角度
-magnitude, angle = sobel_gradients(blurred_image)
+    lines = hough_transform_line(edges)
+    output_image = edges.copy()
+    draw_lines(output_image, lines)
 
-# 非極大值抑制
-suppressed_image = non_max_suppression(magnitude, angle)
-
-# 雙閾值處理
-thresholded_image, weak, strong = double_threshold(suppressed_image, max_value * 0.2, max_value * 0.6)
-
-# 邊緣連接
-edges = edge_tracking(thresholded_image, weak, strong)
-
-# 顯示結果
-cv2.imshow('Edges', edges)
-cv2.waitKey(0)
-cv2.destroyAllWindows()
-
-cv2.imwrite('imgs/edges.jpg', edges)
+    cv2.imshow(f'{img_name} Edges', edges)
+    cv2.imshow(f'{img_name} Detected Lines', output_image)
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
+    cv2.imwrite(f'imgs/{img_name}_edges.jpg', edges)
+    cv2.imwrite(f'imgs/{img_name}_detected_lines.jpg', output_image)
 
 
+    
+# img2
+# img_handeling(cv2.imread('imgs/img2.jpg', 0), 25, 75, 'img2')
+
+#img5
+img_handeling(cv2.imread('imgs/img5.jpg', 0), 30, 90, 'img5')
